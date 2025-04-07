@@ -1,20 +1,18 @@
-import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart'; // kIsWeb 사용
+import 'core/bluetooth/bluetooth_manager.dart';
+import 'dart:io';
 
-void main() {
-  runApp(MyApp());
-}
+void main() => runApp(MyApp());
 
 class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Arduino Bluetooth',
+      title: 'BLE HC-06 컨트롤러',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: BluetoothScreen(), // 또는 TestScreen() - 테스트 환경
+      home: BluetoothScreen(),
     );
   }
 }
@@ -25,99 +23,145 @@ class BluetoothScreen extends StatefulWidget {
 }
 
 class _BluetoothScreenState extends State<BluetoothScreen> {
-  List<BluetoothDevice> _devices = [];
-  bool _isConnected = false;
-  TextEditingController _messageController = TextEditingController();
+  final BluetoothManager _btManager = BluetoothManager();
+  List<ScanResult> _scanResults = [];
   BluetoothDevice? _connectedDevice;
+  bool _isScanning = false;
+  final TextEditingController _messageController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-      // 웹 또는 테스트 환경이 아닐 때만 실행
-      _requestPermissions();
-    }
+    _setupBluetoothListener();
+    _requestPermissions();
   }
 
   Future<void> _requestPermissions() async {
-    await Permission.bluetooth.request();
-    await Permission.location.request();
-  }
-
-  Future<void> _scanDevices() async {
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-      // 웹 또는 테스트 환경이 아닐 때만 실행
-      FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
-      FlutterBluePlus.scanResults.listen((results) {
-        setState(() {
-          _devices = results.map((result) => result.device).toList();
-        });
-      });
+    // Android 12+에서는 BLUETOOTH_CONNECT 권한이 필요
+    if (Platform.isAndroid) {
+      await [
+        Permission.bluetooth,
+        Permission.bluetoothConnect,
+        Permission.bluetoothScan,
+        Permission.locationWhenInUse,
+      ].request();
+    } else if (Platform.isIOS) {
+      await Permission.bluetooth.request();
     }
   }
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
-    await device.connect(autoConnect: false);
-    setState(() {
-      _connectedDevice = device;
-      _isConnected = true;
+  void _setupBluetoothListener() {
+    _btManager.scanDevices().listen((results) {
+      setState(() => _scanResults = results);
     });
   }
 
+  Future<void> _toggleScan() async {
+    if (_isScanning) {
+      await _btManager.stopScan();
+    } else {
+      await _btManager.startScan();
+    }
+    setState(() => _isScanning = !_isScanning);
+  }
+
+  Future<void> _connectDevice(BluetoothDevice device) async {
+    try {
+      await _btManager.connectToDevice(device);
+      setState(() => _connectedDevice = device);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${device.name} 연결 성공')));
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('연결 실패: $e')));
+    }
+  }
+
   Future<void> _sendMessage() async {
-    if (_messageController.text.isNotEmpty && _connectedDevice != null) {
-      List<BluetoothService> services =
-          await _connectedDevice!.discoverServices();
-      for (var service in services) {
-        for (var characteristic in service.characteristics) {
-          if (characteristic.properties.write) {
-            await characteristic.write(_messageController.text.codeUnits);
-            break;
-          }
-        }
-      }
+    if (_connectedDevice == null || _messageController.text.isEmpty) return;
+
+    try {
+      // HC-06 BLE 에뮬레이션 시 UUID (실제 디바이스 값으로 변경 필요)
+      const String serviceUUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+      const String charUUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
+
+      await _btManager.sendData(
+        _connectedDevice!,
+        serviceUUID,
+        charUUID,
+        _messageController.text,
+      );
       _messageController.clear();
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('전송 실패: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('HC-06 연결 앱')),
+      appBar: AppBar(title: Text('HC-06 BLE 컨트롤러')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            ElevatedButton(onPressed: _scanDevices, child: Text('기기 검색')),
+            ElevatedButton(
+              onPressed: _toggleScan,
+              child:
+                  _isScanning
+                      ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 8),
+                          Text('스캔 중...'),
+                        ],
+                      )
+                      : Text('기기 검색 시작'),
+            ),
             Expanded(
-              child: ListView.builder(
-                itemCount: _devices.length,
-                itemBuilder: (context, index) {
-                  return ListTile(
-                    title: Text(_devices[index].platformName),
-                    subtitle: Text(_devices[index].remoteId.toString()),
-                    onTap: () => _connectToDevice(_devices[index]),
-                  );
-                },
+              child:
+                  _scanResults.isEmpty
+                      ? Center(child: Text('검색된 기기가 없습니다'))
+                      : ListView.builder(
+                        itemCount: _scanResults.length,
+                        itemBuilder: (context, index) {
+                          final device = _scanResults[index].device;
+                          return ListTile(
+                            title: Text(device.name),
+                            subtitle: Text(device.id.toString()),
+                            trailing:
+                                _connectedDevice?.id == device.id
+                                    ? Icon(Icons.check, color: Colors.green)
+                                    : null,
+                            onTap: () => _connectDevice(device),
+                          );
+                        },
+                      ),
+            ),
+            TextField(
+              controller: _messageController,
+              decoration: InputDecoration(
+                labelText: 'HC-06에 보낼 메시지',
+                suffixIcon: IconButton(
+                  icon: Icon(Icons.send),
+                  onPressed: _sendMessage,
+                ),
               ),
             ),
-            if (_isConnected) ...[
-              TextField(
-                controller: _messageController,
-                decoration: InputDecoration(labelText: '메시지 입력'),
-              ),
-              ElevatedButton(onPressed: _sendMessage, child: Text('전송')),
-            ],
           ],
         ),
       ),
     );
   }
-}
 
-class TestScreen extends StatelessWidget {
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(body: Center(child: Text('Test App')));
+  void dispose() {
+    _btManager.stopScan();
+    super.dispose();
   }
 }
