@@ -30,7 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_blue_plus: ^1.35.3 # BLE 지원
+  flutter_blue_plus: ^1.35.3 # BLE 통신
   permission_handler: ^11.4.0 # 권한 처리
 
 dev_dependencies:

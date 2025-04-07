@@ -1,8 +1,7 @@
-import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'core/bluetooth/bluetooth_manager.dart';
-import 'dart:io';
 
 void main() => runApp(MyApp());
 
@@ -10,7 +9,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BLE HC-06 컨트롤러',
+      title: 'HC-06 컨트롤러',
       theme: ThemeData(primarySwatch: Colors.blue),
       home: BluetoothScreen(),
     );
@@ -24,45 +23,43 @@ class BluetoothScreen extends StatefulWidget {
 
 class _BluetoothScreenState extends State<BluetoothScreen> {
   final BluetoothManager _btManager = BluetoothManager();
-  List<ScanResult> _scanResults = [];
+  final TextEditingController _searchController = TextEditingController(
+    text: "HC-06",
+  );
+  List<BluetoothDevice> _devices = [];
   BluetoothDevice? _connectedDevice;
   bool _isScanning = false;
-  final TextEditingController _messageController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _setupBluetoothListener();
     _requestPermissions();
   }
 
   Future<void> _requestPermissions() async {
-    // Android 12+에서는 BLUETOOTH_CONNECT 권한이 필요
-    if (Platform.isAndroid) {
-      await [
-        Permission.bluetooth,
-        Permission.bluetoothConnect,
-        Permission.bluetoothScan,
-        Permission.locationWhenInUse,
-      ].request();
-    } else if (Platform.isIOS) {
-      await Permission.bluetooth.request();
-    }
+    await [
+      Permission.bluetooth,
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+      Permission.locationWhenInUse,
+    ].request();
   }
 
-  void _setupBluetoothListener() {
-    _btManager.scanDevices().listen((results) {
-      setState(() => _scanResults = results);
+  Future<void> _startScan() async {
+    setState(() => _isScanning = true);
+    _devices = [];
+
+    await _btManager.startScan(deviceName: _searchController.text.trim());
+    _btManager.scanDevices(deviceName: _searchController.text.trim()).listen((
+      devices,
+    ) {
+      setState(() => _devices = devices);
     });
   }
 
-  Future<void> _toggleScan() async {
-    if (_isScanning) {
-      await _btManager.stopScan();
-    } else {
-      await _btManager.startScan();
-    }
-    setState(() => _isScanning = !_isScanning);
+  Future<void> _stopScan() async {
+    await FlutterBluePlus.stopScan();
+    setState(() => _isScanning = false);
   }
 
   Future<void> _connectDevice(BluetoothDevice device) async {
@@ -79,38 +76,31 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
     }
   }
 
-  Future<void> _sendMessage() async {
-    if (_connectedDevice == null || _messageController.text.isEmpty) return;
-
-    try {
-      // HC-06 BLE 에뮬레이션 시 UUID (실제 디바이스 값으로 변경 필요)
-      const String serviceUUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
-      const String charUUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
-
-      await _btManager.sendData(
-        _connectedDevice!,
-        serviceUUID,
-        charUUID,
-        _messageController.text,
-      );
-      _messageController.clear();
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('전송 실패: $e')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('HC-06 BLE 컨트롤러')),
+      appBar: AppBar(title: Text('HC-06 검색기')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
+            // 검색 필터 입력창
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                labelText: '기기 이름 필터',
+                hintText: 'HC-06',
+                suffixIcon: IconButton(
+                  icon: Icon(Icons.search),
+                  onPressed: _isScanning ? _stopScan : _startScan,
+                ),
+              ),
+            ),
+            SizedBox(height: 20),
+
+            // 검색 버튼
             ElevatedButton(
-              onPressed: _toggleScan,
+              onPressed: _isScanning ? _stopScan : _startScan,
               child:
                   _isScanning
                       ? Row(
@@ -118,40 +108,42 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
                         children: [
                           CircularProgressIndicator(),
                           SizedBox(width: 8),
-                          Text('스캔 중...'),
+                          Text('검색 중...'),
                         ],
                       )
                       : Text('기기 검색 시작'),
             ),
+            SizedBox(height: 20),
+
+            // 검색된 기기 목록
             Expanded(
               child:
-                  _scanResults.isEmpty
-                      ? Center(child: Text('검색된 기기가 없습니다'))
+                  _devices.isEmpty
+                      ? Center(
+                        child: Text(_isScanning ? '검색 중...' : '기기를 찾지 못했습니다'),
+                      )
                       : ListView.builder(
-                        itemCount: _scanResults.length,
+                        itemCount: _devices.length,
                         itemBuilder: (context, index) {
-                          final device = _scanResults[index].device;
-                          return ListTile(
-                            title: Text(device.name),
-                            subtitle: Text(device.id.toString()),
-                            trailing:
-                                _connectedDevice?.id == device.id
-                                    ? Icon(Icons.check, color: Colors.green)
-                                    : null,
-                            onTap: () => _connectDevice(device),
+                          final device = _devices[index];
+                          return Card(
+                            child: ListTile(
+                              leading: Icon(Icons.bluetooth),
+                              title: Text(
+                                device.name.isNotEmpty
+                                    ? device.name
+                                    : 'Unknown Device',
+                              ), // 이름 없을 경우 대체 텍스트
+                              subtitle: Text(device.id.toString()),
+                              trailing:
+                                  _connectedDevice?.id == device.id
+                                      ? Icon(Icons.check, color: Colors.green)
+                                      : null,
+                              onTap: () => _connectDevice(device),
+                            ),
                           );
                         },
                       ),
-            ),
-            TextField(
-              controller: _messageController,
-              decoration: InputDecoration(
-                labelText: 'HC-06에 보낼 메시지',
-                suffixIcon: IconButton(
-                  icon: Icon(Icons.send),
-                  onPressed: _sendMessage,
-                ),
-              ),
             ),
           ],
         ),
@@ -161,7 +153,10 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
 
   @override
   void dispose() {
-    _btManager.stopScan();
+    if (_isScanning) {
+      FlutterBluePlus.stopScan(); // 또는 _btManager.stopScan() (위에서 메서드 추가 후)
+    }
+    _searchController.dispose();
     super.dispose();
   }
 }
