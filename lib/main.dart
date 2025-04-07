@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart'; // kIsWeb 사용
 
 void main() {
   runApp(MyApp());
@@ -12,7 +14,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Arduino Bluetooth',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: BluetoothScreen(),
+      home: BluetoothScreen(), // 또는 TestScreen() - 테스트 환경
     );
   }
 }
@@ -31,7 +33,10 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
   @override
   void initState() {
     super.initState();
-    _requestPermissions();
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      // 웹 또는 테스트 환경이 아닐 때만 실행
+      _requestPermissions();
+    }
   }
 
   Future<void> _requestPermissions() async {
@@ -40,12 +45,15 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
   }
 
   Future<void> _scanDevices() async {
-    FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
-    FlutterBluePlus.scanResults.listen((results) {
-      setState(() {
-        _devices = results.map((result) => result.device).toList();
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      // 웹 또는 테스트 환경이 아닐 때만 실행
+      FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
+      FlutterBluePlus.scanResults.listen((results) {
+        setState(() {
+          _devices = results.map((result) => result.device).toList();
+        });
       });
-    });
+    }
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
@@ -58,7 +66,8 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
 
   Future<void> _sendMessage() async {
     if (_messageController.text.isNotEmpty && _connectedDevice != null) {
-      List<BluetoothService> services = await _connectedDevice!.discoverServices();
+      List<BluetoothService> services =
+          await _connectedDevice!.discoverServices();
       for (var service in services) {
         for (var characteristic in service.characteristics) {
           if (characteristic.properties.write) {
@@ -79,10 +88,7 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            ElevatedButton(
-              onPressed: _scanDevices,
-              child: Text('기기 검색'),
-            ),
+            ElevatedButton(onPressed: _scanDevices, child: Text('기기 검색')),
             Expanded(
               child: ListView.builder(
                 itemCount: _devices.length,
@@ -100,14 +106,18 @@ class _BluetoothScreenState extends State<BluetoothScreen> {
                 controller: _messageController,
                 decoration: InputDecoration(labelText: '메시지 입력'),
               ),
-              ElevatedButton(
-                onPressed: _sendMessage,
-                child: Text('전송'),
-              ),
+              ElevatedButton(onPressed: _sendMessage, child: Text('전송')),
             ],
           ],
         ),
       ),
     );
+  }
+}
+
+class TestScreen extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(body: Center(child: Text('Test App')));
   }
 }
